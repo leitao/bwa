@@ -26,7 +26,12 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <assert.h>
+
+#ifdef __PPC__
+#include <altivec.h>
+#else
 #include <emmintrin.h>
+#endif
 #include "ksw.h"
 
 #ifdef USE_MALLOC_WRAPPERS
@@ -46,7 +51,12 @@ const kswr_t g_defr = { 0, -1, -1, -1, -1, -1, -1 };
 struct _kswq_t {
 	int qlen, slen;
 	uint8_t shift, mdiff, max, size;
+
+#ifdef __PPC__
+	__vector signed char *qp, *H0, *H1, *E, *Hmax;
+#else
 	__m128i *qp, *H0, *H1, *E, *Hmax;
+#endif
 };
 
 /**
@@ -69,7 +79,12 @@ kswq_t *ksw_qinit(int size, int qlen, const uint8_t *query, int m, const int8_t 
 	p = 8 * (3 - size); // # values per __m128i
 	slen = (qlen + p - 1) / p; // segmented length
 	q = (kswq_t*)malloc(sizeof(kswq_t) + 256 + 16 * slen * (m + 4)); // a single block of memory
-	q->qp = (__m128i*)(((size_t)q + sizeof(kswq_t) + 15) >> 4 << 4); // align memory
+
+#ifdef __PPC__
+	q->qp = (__vector signed char*)(((size_t)q + sizeof(kswq_t) + 15) >> 4 << 4);
+#else
+	q->qp = (__m128i*)(((size_t)q + sizeof(kswq_t) + 15) >> 4 << 4);
+#endif // align memory
 	q->H0 = q->qp + slen * m;
 	q->H1 = q->H0 + slen;
 	q->E  = q->H1 + slen;
@@ -108,13 +123,49 @@ kswq_t *ksw_qinit(int size, int qlen, const uint8_t *query, int m, const int8_t 
 	return q;
 }
 
+
+#ifdef __PPC__
+__vector signed char vec_mm_slli_si128(__vector signed char a, int b) {
+	//TODO: You need to provide a PPC implementation.
+}
+#endif
+
+
+#ifdef __PPC__
+int vec_mm_movemask_epi8(__vector signed char a) {
+	//TODO: You need to provide a PPC implementation.
+}
+#endif
+
+
+#ifdef __PPC__
+__vector signed char vec_mm_srli_si128(__vector signed char a, int b) {
+	//TODO: You need to provide a PPC implementation.
+}
+#endif
+
 kswr_t ksw_u8(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_del, int _o_ins, int _e_ins, int xtra) // the first gap costs -(_o+_e)
 {
 	int slen, i, m_b, n_b, te = -1, gmax = 0, minsc, endsc;
 	uint64_t *b;
+
+#ifdef __PPC__
+	__vector signed char zero, oe_del, e_del, oe_ins, e_ins, shift, *H0, *H1, *E, *Hmax;
+#else
 	__m128i zero, oe_del, e_del, oe_ins, e_ins, shift, *H0, *H1, *E, *Hmax;
+#endif
 	kswr_t r;
 
+
+#ifdef __PPC__
+#define __max_16(ret, xx) do { \
+		(xx) = (__vector signed char) vec_max((__vector unsigned char) (xx), (__vector unsigned char) vec_mm_srli_si128((xx), 8)); \
+		(xx) = (__vector signed char) vec_max((__vector unsigned char) (xx), (__vector unsigned char) vec_mm_srli_si128((xx), 4)); \
+		(xx) = (__vector signed char) vec_max((__vector unsigned char) (xx), (__vector unsigned char) vec_mm_srli_si128((xx), 2)); \
+		(xx) = (__vector signed char) vec_max((__vector unsigned char) (xx), (__vector unsigned char) vec_mm_srli_si128((xx), 1)); \
+    	(ret) = (int) ((__vector short) (xx))[0] & 0x00ff; \
+	} while (0)
+#else
 #define __max_16(ret, xx) do { \
 		(xx) = _mm_max_epu8((xx), _mm_srli_si128((xx), 8)); \
 		(xx) = _mm_max_epu8((xx), _mm_srli_si128((xx), 4)); \
@@ -122,31 +173,92 @@ kswr_t ksw_u8(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_del
 		(xx) = _mm_max_epu8((xx), _mm_srli_si128((xx), 1)); \
     	(ret) = _mm_extract_epi16((xx), 0) & 0x00ff; \
 	} while (0)
+#endif
 
 	// initialization
 	r = g_defr;
 	minsc = (xtra&KSW_XSUBO)? xtra&0xffff : 0x10000;
 	endsc = (xtra&KSW_XSTOP)? xtra&0xffff : 0x10000;
 	m_b = n_b = 0; b = 0;
+
+#ifdef __PPC__
+	zero = (__vector signed char)((__vector int){0, 0, 0, 0});
+#else
 	zero = _mm_set1_epi32(0);
+#endif
+
+#ifdef __PPC__
+	oe_del = (__vector signed char){_o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del};
+#else
 	oe_del = _mm_set1_epi8(_o_del + _e_del);
+#endif
+
+#ifdef __PPC__
+	e_del = (__vector signed char){_e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del};
+#else
 	e_del = _mm_set1_epi8(_e_del);
+#endif
+
+#ifdef __PPC__
+	oe_ins = (__vector signed char){_o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins};
+#else
 	oe_ins = _mm_set1_epi8(_o_ins + _e_ins);
+#endif
+
+#ifdef __PPC__
+	e_ins = (__vector signed char){_e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins};
+#else
 	e_ins = _mm_set1_epi8(_e_ins);
+#endif
+
+#ifdef __PPC__
+	shift = (__vector signed char){q->shift, q->shift, q->shift, q->shift, q->shift, q->shift, q->shift, q->shift, q->shift, q->shift, q->shift, q->shift, q->shift, q->shift, q->shift, q->shift};
+#else
 	shift = _mm_set1_epi8(q->shift);
+#endif
 	H0 = q->H0; H1 = q->H1; E = q->E; Hmax = q->Hmax;
 	slen = q->slen;
 	for (i = 0; i < slen; ++i) {
+
+#ifdef __PPC__
+		*(__vector signed char*) (E + i) = (zero);
+#else
 		_mm_store_si128(E + i, zero);
+#endif
+
+#ifdef __PPC__
+		*(__vector signed char*) (H0 + i) = (zero);
+#else
 		_mm_store_si128(H0 + i, zero);
+#endif
+
+#ifdef __PPC__
+		*(__vector signed char*) (Hmax + i) = (zero);
+#else
 		_mm_store_si128(Hmax + i, zero);
+#endif
 	}
 	// the core loop
 	for (i = 0; i < tlen; ++i) {
 		int j, k, cmp, imax;
-		__m128i e, h, t, f = zero, max = zero, *S = q->qp + target[i] * slen; // s is the 1st score vector
-		h = _mm_load_si128(H0 + slen - 1); // h={2,5,8,11,14,17,-1,-1} in the above example
-		h = _mm_slli_si128(h, 1); // h=H(i-1,-1); << instead of >> because x64 is little-endian
+
+#ifdef __PPC__
+		__vector signed char e, h, t, f = zero, max = zero, *S = q->qp + target[i] * slen;
+#else
+		__m128i e, h, t, f = zero, max = zero, *S = q->qp + target[i] * slen;
+#endif // s is the 1st score vector
+
+#ifdef __PPC__
+		h = *(__vector signed char*) (H0 + slen - 1);
+#else
+		h = _mm_load_si128(H0 + slen - 1);
+#endif // h={2,5,8,11,14,17,-1,-1} in the above example
+
+#ifdef __PPC__
+		h = vec_mm_slli_si128(h, 1);
+#else
+		h = _mm_slli_si128(h, 1);
+#endif // h=H(i-1,-1); << instead of >> because x64 is little-endian
 		for (j = 0; LIKELY(j < slen); ++j) {
 			/* SW cells are computed in the following order:
 			 *   H(i,j)   = max{H(i-1,j-1)+S(i,j), E(i,j), F(i,j)}
@@ -154,35 +266,145 @@ kswr_t ksw_u8(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_del
 			 *   F(i,j+1) = max{H(i,j)-q, F(i,j)-r}
 			 */
 			// compute H'(i,j); note that at the beginning, h=H'(i-1,j-1)
+
+#ifdef __PPC__
+			h = (__vector signed char) vec_adds((__vector unsigned char) h, (__vector unsigned char) *(__vector signed char*) (S + j));
+#else
 			h = _mm_adds_epu8(h, _mm_load_si128(S + j));
-			h = _mm_subs_epu8(h, shift); // h=H'(i-1,j-1)+S(i,j)
-			e = _mm_load_si128(E + j); // e=E'(i,j)
+#endif
+
+#ifdef __PPC__
+			h = (__vector signed char) vec_subs((__vector unsigned char) h, (__vector unsigned char) shift);
+#else
+			h = _mm_subs_epu8(h, shift);
+#endif // h=H'(i-1,j-1)+S(i,j)
+
+#ifdef __PPC__
+			e = *(__vector signed char*) (E + j);
+#else
+			e = _mm_load_si128(E + j);
+#endif // e=E'(i,j)
+
+#ifdef __PPC__
+			h = (__vector signed char) vec_max((__vector unsigned char) h, (__vector unsigned char) e);
+#else
 			h = _mm_max_epu8(h, e);
-			h = _mm_max_epu8(h, f); // h=H'(i,j)
-			max = _mm_max_epu8(max, h); // set max
-			_mm_store_si128(H1 + j, h); // save to H'(i,j)
+#endif
+
+#ifdef __PPC__
+			h = (__vector signed char) vec_max((__vector unsigned char) h, (__vector unsigned char) f);
+#else
+			h = _mm_max_epu8(h, f);
+#endif // h=H'(i,j)
+
+#ifdef __PPC__
+			max = (__vector signed char) vec_max((__vector unsigned char) max, (__vector unsigned char) h);
+#else
+			max = _mm_max_epu8(max, h);
+#endif // set max
+
+#ifdef __PPC__
+			*(__vector signed char*) (H1 + j) = (h);
+#else
+			_mm_store_si128(H1 + j, h);
+#endif // save to H'(i,j)
 			// now compute E'(i+1,j)
-			e = _mm_subs_epu8(e, e_del); // e=E'(i,j) - e_del
-			t = _mm_subs_epu8(h, oe_del); // h=H'(i,j) - o_del - e_del
-			e = _mm_max_epu8(e, t); // e=E'(i+1,j)
-			_mm_store_si128(E + j, e); // save to E'(i+1,j)
+
+#ifdef __PPC__
+			e = (__vector signed char) vec_subs((__vector unsigned char) e, (__vector unsigned char) e_del);
+#else
+			e = _mm_subs_epu8(e, e_del);
+#endif // e=E'(i,j) - e_del
+
+#ifdef __PPC__
+			t = (__vector signed char) vec_subs((__vector unsigned char) h, (__vector unsigned char) oe_del);
+#else
+			t = _mm_subs_epu8(h, oe_del);
+#endif // h=H'(i,j) - o_del - e_del
+
+#ifdef __PPC__
+			e = (__vector signed char) vec_max((__vector unsigned char) e, (__vector unsigned char) t);
+#else
+			e = _mm_max_epu8(e, t);
+#endif // e=E'(i+1,j)
+
+#ifdef __PPC__
+			*(__vector signed char*) (E + j) = (e);
+#else
+			_mm_store_si128(E + j, e);
+#endif // save to E'(i+1,j)
 			// now compute F'(i,j+1)
+
+#ifdef __PPC__
+			f = (__vector signed char) vec_subs((__vector unsigned char) f, (__vector unsigned char) e_ins);
+#else
 			f = _mm_subs_epu8(f, e_ins);
-			t = _mm_subs_epu8(h, oe_ins); // h=H'(i,j) - o_ins - e_ins
+#endif
+
+#ifdef __PPC__
+			t = (__vector signed char) vec_subs((__vector unsigned char) h, (__vector unsigned char) oe_ins);
+#else
+			t = _mm_subs_epu8(h, oe_ins);
+#endif // h=H'(i,j) - o_ins - e_ins
+
+#ifdef __PPC__
+			f = (__vector signed char) vec_max((__vector unsigned char) f, (__vector unsigned char) t);
+#else
 			f = _mm_max_epu8(f, t);
+#endif
 			// get H'(i-1,j) and prepare for the next j
-			h = _mm_load_si128(H0 + j); // h=H'(i-1,j)
+
+#ifdef __PPC__
+			h = *(__vector signed char*) (H0 + j);
+#else
+			h = _mm_load_si128(H0 + j);
+#endif // h=H'(i-1,j)
 		}
 		// NB: we do not need to set E(i,j) as we disallow adjecent insertion and then deletion
 		for (k = 0; LIKELY(k < 16); ++k) { // this block mimics SWPS3; NB: H(i,j) updated in the lazy-F loop cannot exceed max
+
+#ifdef __PPC__
+			f = vec_mm_slli_si128(f, 1);
+#else
 			f = _mm_slli_si128(f, 1);
+#endif
 			for (j = 0; LIKELY(j < slen); ++j) {
+
+#ifdef __PPC__
+				h = *(__vector signed char*) (H1 + j);
+#else
 				h = _mm_load_si128(H1 + j);
-				h = _mm_max_epu8(h, f); // h=H'(i,j)
+#endif
+
+#ifdef __PPC__
+				h = (__vector signed char) vec_max((__vector unsigned char) h, (__vector unsigned char) f);
+#else
+				h = _mm_max_epu8(h, f);
+#endif // h=H'(i,j)
+
+#ifdef __PPC__
+				*(__vector signed char*) (H1 + j) = (h);
+#else
 				_mm_store_si128(H1 + j, h);
+#endif
+
+#ifdef __PPC__
+				h = (__vector signed char) vec_subs((__vector unsigned char) h, (__vector unsigned char) oe_ins);
+#else
 				h = _mm_subs_epu8(h, oe_ins);
+#endif
+
+#ifdef __PPC__
+				f = (__vector signed char) vec_subs((__vector unsigned char) f, (__vector unsigned char) e_ins);
+#else
 				f = _mm_subs_epu8(f, e_ins);
+#endif
+
+#ifdef __PPC__
+				cmp = vec_mm_movemask_epi8((__vector signed char)vec_cmpeq((__vector signed char) vec_subs((__vector signed char) f, (__vector signed char) h), zero));
+#else
 				cmp = _mm_movemask_epi8(_mm_cmpeq_epi8(_mm_subs_epu8(f, h), zero));
+#endif
 				if (UNLIKELY(cmp == 0xffff)) goto end_loop16;
 			}
 		}
@@ -201,7 +423,12 @@ end_loop16:
 		if (imax > gmax) {
 			gmax = imax; te = i; // te is the end position on the target
 			for (j = 0; LIKELY(j < slen); ++j) // keep the H1 vector
+
+#ifdef __PPC__
+				*(__vector signed char*) (Hmax + j) = (*(__vector signed char*) (H1 + j));
+#else
 				_mm_store_si128(Hmax + j, _mm_load_si128(H1 + j));
+#endif
 			if (gmax + q->shift >= 255 || gmax >= endsc) break;
 		}
 		S = H1; H1 = H0; H0 = S; // swap H0 and H1
@@ -212,6 +439,7 @@ end_loop16:
 		int max = -1, tmp, low, high, qlen = slen * 16;
 		uint8_t *t = (uint8_t*)Hmax;
 		for (i = 0; i < qlen; ++i, ++t)
+
 			if ((int)*t > max) max = *t, r.qe = i / 16 + i % 16 * slen;
 			else if ((int)*t == max && (tmp = i / 16 + i % 16 * slen) < r.qe) r.qe = tmp; 
 		//printf("%d,%d\n", max, gmax);
@@ -233,64 +461,239 @@ kswr_t ksw_i16(kswq_t *q, int tlen, const uint8_t *target, int _o_del, int _e_de
 {
 	int slen, i, m_b, n_b, te = -1, gmax = 0, minsc, endsc;
 	uint64_t *b;
+
+#ifdef __PPC__
+	__vector signed char zero, oe_del, e_del, oe_ins, e_ins, *H0, *H1, *E, *Hmax;
+#else
 	__m128i zero, oe_del, e_del, oe_ins, e_ins, *H0, *H1, *E, *Hmax;
+#endif
 	kswr_t r;
 
+
+#ifdef __PPC__
+#define __max_8(ret, xx) do { \
+		(xx) = (__vector signed char) vec_max((__vector short) (xx), (__vector short) vec_mm_srli_si128((xx), 8)); \
+		(xx) = (__vector signed char) vec_max((__vector short) (xx), (__vector short) vec_mm_srli_si128((xx), 4)); \
+		(xx) = (__vector signed char) vec_max((__vector short) (xx), (__vector short) vec_mm_srli_si128((xx), 2)); \
+    	(ret) = (int) ((__vector short) (xx))[0]; \
+	} while (0)
+#else
 #define __max_8(ret, xx) do { \
 		(xx) = _mm_max_epi16((xx), _mm_srli_si128((xx), 8)); \
 		(xx) = _mm_max_epi16((xx), _mm_srli_si128((xx), 4)); \
 		(xx) = _mm_max_epi16((xx), _mm_srli_si128((xx), 2)); \
     	(ret) = _mm_extract_epi16((xx), 0); \
 	} while (0)
+#endif
 
 	// initialization
 	r = g_defr;
 	minsc = (xtra&KSW_XSUBO)? xtra&0xffff : 0x10000;
 	endsc = (xtra&KSW_XSTOP)? xtra&0xffff : 0x10000;
 	m_b = n_b = 0; b = 0;
+
+#ifdef __PPC__
+	zero = (__vector signed char)((__vector int){0, 0, 0, 0});
+#else
 	zero = _mm_set1_epi32(0);
+#endif
+
+#ifdef __PPC__
+	oe_del = (__vector signed char)((__vector short){_o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del, _o_del + _e_del});
+#else
 	oe_del = _mm_set1_epi16(_o_del + _e_del);
+#endif
+
+#ifdef __PPC__
+	e_del = (__vector signed char)((__vector short){_e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del, _e_del});
+#else
 	e_del = _mm_set1_epi16(_e_del);
+#endif
+
+#ifdef __PPC__
+	oe_ins = (__vector signed char)((__vector short){_o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins, _o_ins + _e_ins});
+#else
 	oe_ins = _mm_set1_epi16(_o_ins + _e_ins);
+#endif
+
+#ifdef __PPC__
+	e_ins = (__vector signed char)((__vector short){_e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins, _e_ins});
+#else
 	e_ins = _mm_set1_epi16(_e_ins);
+#endif
 	H0 = q->H0; H1 = q->H1; E = q->E; Hmax = q->Hmax;
 	slen = q->slen;
 	for (i = 0; i < slen; ++i) {
+
+#ifdef __PPC__
+		*(__vector signed char*) (E + i) = (zero);
+#else
 		_mm_store_si128(E + i, zero);
+#endif
+
+#ifdef __PPC__
+		*(__vector signed char*) (H0 + i) = (zero);
+#else
 		_mm_store_si128(H0 + i, zero);
+#endif
+
+#ifdef __PPC__
+		*(__vector signed char*) (Hmax + i) = (zero);
+#else
 		_mm_store_si128(Hmax + i, zero);
+#endif
 	}
 	// the core loop
 	for (i = 0; i < tlen; ++i) {
 		int j, k, imax;
-		__m128i e, t, h, f = zero, max = zero, *S = q->qp + target[i] * slen; // s is the 1st score vector
-		h = _mm_load_si128(H0 + slen - 1); // h={2,5,8,11,14,17,-1,-1} in the above example
+
+#ifdef __PPC__
+		__vector signed char e, t, h, f = zero, max = zero, *S = q->qp + target[i] * slen;
+#else
+		__m128i e, t, h, f = zero, max = zero, *S = q->qp + target[i] * slen;
+#endif // s is the 1st score vector
+
+#ifdef __PPC__
+		h = *(__vector signed char*) (H0 + slen - 1);
+#else
+		h = _mm_load_si128(H0 + slen - 1);
+#endif // h={2,5,8,11,14,17,-1,-1} in the above example
+
+#ifdef __PPC__
+		h = vec_mm_slli_si128(h, 2);
+#else
 		h = _mm_slli_si128(h, 2);
+#endif
 		for (j = 0; LIKELY(j < slen); ++j) {
+
+#ifdef __PPC__
+			h = (__vector signed char) vec_adds((__vector short) h, (__vector short) *S++);
+#else
 			h = _mm_adds_epi16(h, *S++);
+#endif
+
+#ifdef __PPC__
+			e = *(__vector signed char*) (E + j);
+#else
 			e = _mm_load_si128(E + j);
+#endif
+
+#ifdef __PPC__
+			h = (__vector signed char) vec_max((__vector short) h, (__vector short) e);
+#else
 			h = _mm_max_epi16(h, e);
+#endif
+
+#ifdef __PPC__
+			h = (__vector signed char) vec_max((__vector short) h, (__vector short) f);
+#else
 			h = _mm_max_epi16(h, f);
+#endif
+
+#ifdef __PPC__
+			max = (__vector signed char) vec_max((__vector short) max, (__vector short) h);
+#else
 			max = _mm_max_epi16(max, h);
+#endif
+
+#ifdef __PPC__
+			*(__vector signed char*) (H1 + j) = (h);
+#else
 			_mm_store_si128(H1 + j, h);
+#endif
+
+#ifdef __PPC__
+			e = (__vector signed char) vec_subs((__vector unsigned short) e, (__vector unsigned short) e_del);
+#else
 			e = _mm_subs_epu16(e, e_del);
+#endif
+
+#ifdef __PPC__
+			t = (__vector signed char) vec_subs((__vector unsigned short) h, (__vector unsigned short) oe_del);
+#else
 			t = _mm_subs_epu16(h, oe_del);
+#endif
+
+#ifdef __PPC__
+			e = (__vector signed char) vec_max((__vector short) e, (__vector short) t);
+#else
 			e = _mm_max_epi16(e, t);
+#endif
+
+#ifdef __PPC__
+			*(__vector signed char*) (E + j) = (e);
+#else
 			_mm_store_si128(E + j, e);
+#endif
+
+#ifdef __PPC__
+			f = (__vector signed char) vec_subs((__vector unsigned short) f, (__vector unsigned short) e_ins);
+#else
 			f = _mm_subs_epu16(f, e_ins);
+#endif
+
+#ifdef __PPC__
+			t = (__vector signed char) vec_subs((__vector unsigned short) h, (__vector unsigned short) oe_ins);
+#else
 			t = _mm_subs_epu16(h, oe_ins);
+#endif
+
+#ifdef __PPC__
+			f = (__vector signed char) vec_max((__vector short) f, (__vector short) t);
+#else
 			f = _mm_max_epi16(f, t);
+#endif
+
+#ifdef __PPC__
+			h = *(__vector signed char*) (H0 + j);
+#else
 			h = _mm_load_si128(H0 + j);
+#endif
 		}
 		for (k = 0; LIKELY(k < 16); ++k) {
+
+#ifdef __PPC__
+			f = vec_mm_slli_si128(f, 2);
+#else
 			f = _mm_slli_si128(f, 2);
+#endif
 			for (j = 0; LIKELY(j < slen); ++j) {
+
+#ifdef __PPC__
+				h = *(__vector signed char*) (H1 + j);
+#else
 				h = _mm_load_si128(H1 + j);
+#endif
+
+#ifdef __PPC__
+				h = (__vector signed char) vec_max((__vector short) h, (__vector short) f);
+#else
 				h = _mm_max_epi16(h, f);
+#endif
+
+#ifdef __PPC__
+				*(__vector signed char*) (H1 + j) = (h);
+#else
 				_mm_store_si128(H1 + j, h);
+#endif
+
+#ifdef __PPC__
+				h = (__vector signed char) vec_subs((__vector unsigned short) h, (__vector unsigned short) oe_ins);
+#else
 				h = _mm_subs_epu16(h, oe_ins);
+#endif
+
+#ifdef __PPC__
+				f = (__vector signed char) vec_subs((__vector unsigned short) f, (__vector unsigned short) e_ins);
+#else
 				f = _mm_subs_epu16(f, e_ins);
+#endif
+
+#ifdef __PPC__
+				//TODO
+#else				
 				if(UNLIKELY(!_mm_movemask_epi8(_mm_cmpgt_epi16(f, h)))) goto end_loop8;
+#endif
 			}
 		}
 end_loop8:
@@ -307,7 +710,12 @@ end_loop8:
 		if (imax > gmax) {
 			gmax = imax; te = i;
 			for (j = 0; LIKELY(j < slen); ++j)
+
+#ifdef __PPC__
+				*(__vector signed char*) (Hmax + j) = (*(__vector signed char*) (H1 + j));
+#else
 				_mm_store_si128(Hmax + j, _mm_load_si128(H1 + j));
+#endif
 			if (gmax >= endsc) break;
 		}
 		S = H1; H1 = H0; H0 = S;
